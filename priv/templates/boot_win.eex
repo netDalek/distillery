@@ -19,7 +19,7 @@
 @if "%RELEASE_MUTABLE_DIR%"=="" (
   set mutable_dir=%release_root_dir%\var
 ) else (
-  set mutable_dir=%RELEASE_MUTABLE_DIR
+  set mutable_dir=%RELEASE_MUTABLE_DIR%
 )
 
 @if "%RELEASE_CONFIG_DIR%"=="" (
@@ -260,7 +260,7 @@
   %erlsrv% add %service_name% ^
             -c "%description%" ^
             %node_type% "%node_name%" ^
-            -w "%rootdir%\var" ^
+            -w "%mutable_dir%" ^
             -m "%start_erl%" ^
             -args "!service_args!" ^
             -debugtype new ^
@@ -282,6 +282,7 @@
 :: Start the Windows service
 :start
 @call :pre_configure_hooks
+@call :post_configure_hooks
 @call :pre_start_hooks
 @%erlsrv% start %service_name%
 @call :post_start_hooks
@@ -325,6 +326,7 @@ if exists "%rel_dir%\vm.args.bak" do (
 @copy /B /Y "%vm_args%" "%rel_dir%/vm.args"
 :: Run pre hooks
 @call :pre_configure_hooks
+@call :post_configure_hooks
 @call :pre_upgrade_hooks
 :: Perform upgrade
 @%escript% "%rootdir%/bin/release_utils.escript" ^
@@ -341,7 +343,8 @@ if exists "%rel_dir%\vm.args.bak" do (
 :: Start a console
 :console
 @call :pre_configure_hooks
-@call :pre_start hooks
+@call :post_configure_hooks
+@call :pre_start_hooks
 @start "%rel_name% console" %werl% -boot "%boot_script%" ^
        -config "%sys_config%"  ^
        -args_file "%vm_args%" ^
@@ -352,10 +355,11 @@ if exists "%rel_dir%\vm.args.bak" do (
 :: Start the release in the foreground
 :foreground
 @call :pre_configure_hooks
+@call :post_configure_hooks
 @call :pre_start_hooks
 @set EMU=beam
 @set PROGNAME=%~n0
-@start /B "%erl%" -noshell -noinput +Bd ^
+@start "" /B "%erl%" -noshell -noinput +Bd ^
        -boot "%boot_script%" ^
        -boot_var ERTS_LIB_DIR "%erts_dir%\..\lib" ^
        -env ERL_LIBS "%release_root_dir%\lib%" ^
@@ -469,6 +473,7 @@ if exists "%rel_dir%\vm.args.bak" do (
 @call :ping>NUL
 @if %ERRORLEVEL% GEQ 1 exit %ERRORLEVEL%
 @call :pre_configure_hooks
+@call :post_configure_hooks
 @setlocal EnableDelayedExpansion
 @%escript% %nodetool% reload_config %node_type% %node_name% -setcookie "!cookie!" "%sys_config%"
 @endlocal
@@ -527,6 +532,10 @@ if exists "%rel_dir%\vm.args.bak" do (
 
 :pre_configure_hooks
 @call :execute_hooks pre_configure
+@goto :eof
+
+:post_configure_hooks
+@call :execute_hooks post_configure
 @goto :eof
 
 :pre_start_hooks

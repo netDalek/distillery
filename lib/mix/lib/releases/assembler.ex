@@ -62,18 +62,36 @@ defmodule Mix.Releases.Assembler do
       for app <- release.applications do
         copy_app(app, release)
       end
-      # Copy consolidated .beams
-      build_path = Mix.Project.build_path(Mix.Project.config)
-      consolidated_dest = Path.join([output_dir, "lib", "#{release.name}-#{release.version}", "consolidated"])
-      File.mkdir_p!(consolidated_dest)
-      consolidated_src = Path.join(build_path, "consolidated")
-      if File.exists?(consolidated_src) do
-        {:ok, _} = File.cp_r(consolidated_src, consolidated_dest)
+      case copy_consolidated(release) do
+        :ok ->
+          {:ok, release}
+        {:error, _} = err ->
+          err
       end
-      {:ok, release}
     catch
       kind, err ->
         {:error, {:assembler, {kind, err}}}
+    end
+  end
+
+  # Copy consolidated .beams
+  defp copy_consolidated(%Release{profile: %Profile{dev_mode: true}}) do
+    :ok
+  end
+  defp copy_consolidated(%Release{name: name, version: version, profile: profile}) do
+    src = Mix.Project.consolidation_path()
+    dest = Path.join([profile.output_dir, "lib", "#{name}-#{version}", "consolidated"])
+    remove_symlink_or_dir!(dest)
+    File.mkdir_p!(dest)
+    if File.exists?(src) do
+      case File.cp_r(src, dest) do
+        {:ok, _} ->
+          :ok
+        {:error, reason} ->
+          {:error, {:assembler, :file, {:copy_consolidated, src, dest, reason}}}
+      end
+    else
+      :ok
     end
   end
 
@@ -230,9 +248,10 @@ defmodule Mix.Releases.Assembler do
   # Creates the .boot files, nodetool, vm.args, sys.config, start_erl.data, and includes ERTS into
   # the release if so configured
   defp write_binfile(release, rel_dir) do
-    name    = "#{release.name}"
+    name = "#{release.name}"
     bin_dir         = Path.join(release.profile.output_dir, "bin")
-    bootloader_path = Path.join(bin_dir, name)
+    bootcheck_path  = Path.join(bin_dir, name)
+    bootloader_path = Path.join(bin_dir, "#{name}_loader.sh")
     boot_path       = Path.join(rel_dir, "#{name}.sh")
     bootloader_win_path = Path.join(bin_dir, "#{name}.bat")
     boot_win_path       = Path.join(rel_dir, "#{name}.bat")
@@ -240,14 +259,17 @@ defmodule Mix.Releases.Assembler do
 
     with :ok <- File.mkdir_p(bin_dir),
          :ok <- generate_nodetool(bin_dir),
+         {:ok, bootcheck_contents} <- Utils.template(:boot_check, template_params),
          {:ok, bootloader_contents} <- Utils.template(:boot_loader, template_params),
          {:ok, bootloader_win_contents} <- Utils.template(:boot_loader_win, template_params),
          {:ok, boot_contents} <- Utils.template(:boot, template_params),
          {:ok, boot_win_contents} <- Utils.template(:boot_win, template_params),
+         :ok <- File.write(bootcheck_path, bootcheck_contents),
          :ok <- File.write(bootloader_path, bootloader_contents),
          :ok <- File.write(bootloader_win_path, bootloader_win_contents),
          :ok <- File.write(boot_path, boot_contents),
          :ok <- File.write(boot_win_path, boot_win_contents),
+         :ok <- File.chmod(bootcheck_path, 0o777),
          :ok <- File.chmod(bootloader_path, 0o777),
          :ok <- File.chmod(bootloader_win_path, 0o777),
          :ok <- File.chmod!(boot_path, 0o777),
@@ -784,9 +806,11 @@ defmodule Mix.Releases.Assembler do
     Logger.debug "Applying overlays"
     overlay_vars = release.profile.overlay_vars
     hooks_dir = "releases/<%= release_version %>/hooks"
+    libexec_source = Path.join("#{:code.priv_dir(:distillery)}", "libexec")
     hook_overlays = [
       {:mkdir, hooks_dir},
       {:mkdir, "#{hooks_dir}/pre_configure.d"},
+      {:mkdir, "#{hooks_dir}/post_configure.d"},
       {:mkdir, "#{hooks_dir}/pre_start.d"},
       {:mkdir, "#{hooks_dir}/post_start.d"},
       {:mkdir, "#{hooks_dir}/pre_stop.d"},
@@ -794,6 +818,7 @@ defmodule Mix.Releases.Assembler do
       {:mkdir, "#{hooks_dir}/pre_upgrade.d"},
       {:mkdir, "#{hooks_dir}/post_upgrade.d"},
       {:copy, release.profile.pre_configure_hook, "#{hooks_dir}/pre_configure.d/00_pre_configure_hook.sh"},
+      {:copy, release.profile.post_configure_hook, "#{hooks_dir}/post_configure.d/00_post_configure_hook.sh"},
       {:copy, release.profile.pre_start_hook, "#{hooks_dir}/pre_start.d/00_pre_start_hook.sh"},
       {:copy, release.profile.post_start_hook, "#{hooks_dir}/post_start.d/00_post_start_hook.sh"},
       {:copy, release.profile.pre_stop_hook, "#{hooks_dir}/pre_stop.d/00_pre_stop_hook.sh"},
@@ -801,12 +826,14 @@ defmodule Mix.Releases.Assembler do
       {:copy, release.profile.pre_upgrade_hook, "#{hooks_dir}/pre_upgrade.d/00_pre_upgrade_hook.sh"},
       {:copy, release.profile.post_upgrade_hook, "#{hooks_dir}/post_upgrade.d/00_post_upgrade_hook.sh"},
       {:copy, release.profile.pre_configure_hooks, "#{hooks_dir}/pre_configure.d"},
+      {:copy, release.profile.post_configure_hooks, "#{hooks_dir}/post_configure.d"},
       {:copy, release.profile.pre_start_hooks, "#{hooks_dir}/pre_start.d"},
       {:copy, release.profile.post_start_hooks, "#{hooks_dir}/post_start.d"},
       {:copy, release.profile.pre_stop_hooks, "#{hooks_dir}/pre_stop.d"},
       {:copy, release.profile.post_stop_hooks, "#{hooks_dir}/post_stop.d"},
       {:copy, release.profile.pre_upgrade_hooks, "#{hooks_dir}/pre_upgrade.d"},
       {:copy, release.profile.post_upgrade_hooks, "#{hooks_dir}/post_upgrade.d"},
+      {:copy, libexec_source, "releases/<%= release_version %>/libexec"},
       {:mkdir, "releases/<%= release_version %>/commands"} |
       Enum.map(release.profile.commands, fn {name, path} ->
         {:copy, path, "releases/<%= release_version %>/commands/#{name}.sh"}
